@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import urllib.parse
 import io
+import unicodedata
 from streamlit_gsheets import GSheetsConnection
 
 # Nastavení širokého rozvržení stránky
@@ -23,20 +24,21 @@ def check_password():
         password = st.text_input("Zadejte heslo:", type="password")
         
         if st.button("Přihlásit se"):
-            # Převod jména na klíč pro secrets (např. "Martin Urban" -> "martin_urban")
-            user_key = user.lower().replace(" ", "_").replace("í", "i")
+            # Očištění jména pro klíč v Secrets (odstranění diakritiky)
+            normalized = unicodedata.normalize('NFKD', user)
+            user_key = "".join([c for c in normalized if not unicodedata.combining(c)])
+            user_key = user_key.lower().replace(" ", "_")
             
-            # Kontrola hesla proti Secrets (musí být nastaveno ve Streamlit Cloudu)
             if user_key in st.secrets["credentials"] and password == st.secrets["credentials"][user_key]:
                 st.session_state["authenticated"] = True
                 st.session_state["user_role"] = user
                 st.rerun()
             else:
-                st.error("❌ Nesprávné heslo!")
+                st.error(f"❌ Nesprávné heslo pro uživatele {user}!")
         return False
     return True
 
-# Spuštění kontroly přihlášení
+# Zastaví kód, pokud uživatel není přihlášen
 if not check_password():
     st.stop()
 
@@ -58,12 +60,12 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
     try:
+        # Čteme 10 sloupců: ID, Mesic, Sluzba, Agregator, Castka, Mena, Urban, Iwonski, Cejka, Provize
         df = conn.read(worksheet="Data", usecols=list(range(10)))
         if df.empty or "ID" not in df.columns:
             return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka", "Provize"])
         df = df.fillna("")
         df['ID'] = df['ID'].astype(str)
-        # Převod na čísla
         df['Castka'] = pd.to_numeric(df['Castka'], errors='coerce').fillna(0)
         df['Provize'] = pd.to_numeric(df['Provize'], errors='coerce').fillna(0)
         return df
@@ -72,7 +74,7 @@ def load_data():
 
 df = load_data()
 
-# Funkce pro výpočet zpoždění
+# Funkce pro výpočet zpoždění (pro urgence)
 def zpozdeni_dnu(text_statusu):
     if not text_statusu or "(" not in text_statusu: return 0
     try:
@@ -95,7 +97,7 @@ vybrany_mesic = st.sidebar.selectbox("Fakturační období:", mesice)
 
 st.title(f"Fakturace: {vybrany_mesic}")
 
-# --- LOGIKA DEADLINE ---
+# --- LOGIKA DEADLINE (25. den následujícího měsíce) ---
 v_m, v_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
 d_m = 1 if v_m == 12 else v_m + 1
 d_r = v_r + 1 if v_m == 12 else v_r
@@ -108,7 +110,7 @@ tabs = st.tabs(nazvy_sluzeb + ["📦 Ostatní", "📈 Analytika", "🗂️ Celko
 df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
 
 # ==========================================
-# 2. STANDARDNÍ SLUŽBY
+# 2. STANDARDNÍ SLUŽBY (3 KROKY)
 # ==========================================
 for i, sluzba in enumerate(nazvy_sluzeb):
     with tabs[i]:
@@ -116,7 +118,7 @@ for i, sluzba in enumerate(nazvy_sluzeb):
         for agregator in SLUZBY_AGREGATORI[sluzba]:
             zaznam = df_mesic[(df_mesic["Sluzba"] == sluzba) & (df_mesic["Agregator"] == agregator)]
             u_key = f"{sluzba}_{agregator}".replace(" ", "_")
-            dnes = datetime.now().strftime("%d.%m.%Y")
+            dnes_full = datetime.now().strftime("%d.%m.%Y")
             
             with st.container(border=True):
                 if zaznam.empty:
@@ -130,12 +132,12 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                     
                     if role == "Martin Urban":
                         with c2:
-                            in_c = st.number_input("Zadat částku", min_value=0.0, value=None, format="%.2f", key=f"c_{u_key}", placeholder="Zadejte částku")
+                            in_c = st.number_input("Částka", min_value=0.0, value=None, format="%.2f", key=f"c_{u_key}", placeholder="Např. 50000")
                         with c3:
                             in_m = st.selectbox("Měna", ["Kč", "EUR"], key=f"m_{u_key}")
                             if st.button("Uložit a schválit", key=f"b_{u_key}", type="primary", use_container_width=True, disabled=in_c is None):
                                 nove_id = str(datetime.now().timestamp())
-                                n_z = pd.DataFrame([{"ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator, "Castka": in_c, "Mena": in_m, "Urban": f"Urban ({dnes})", "Iwonski": "", "Cejka": "", "Provize": 0}])
+                                n_z = pd.DataFrame([{"ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator, "Castka": in_c, "Mena": in_m, "Urban": f"Urban ({dnes_full})", "Iwonski": "", "Cejka": "", "Provize": 0}])
                                 df = pd.concat([df, n_z], ignore_index=True)
                                 conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
                     else:
@@ -157,7 +159,7 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                     if row['Iwonski']: s2.success(f"**Jiw:** {row['Iwonski']}")
                     elif role == "Jiří Iwonski":
                         if s2.button("Schválit (Jiw)", key=f"i_{row['ID']}", type="primary"):
-                            df.loc[df['ID'] == str(row['ID']), 'Iwonski'] = f"Jiw ({dnes})"
+                            df.loc[df['ID'] == str(row['ID']), 'Iwonski'] = f"Jiw ({dnes_full})"
                             conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
                     else:
                         dny = zpozdeni_dnu(row['Urban'])
@@ -170,7 +172,7 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                     if row['Cejka']: s3.success(f"**Martin:** {row['Cejka']}")
                     elif role == "Martin Čejka":
                         if row['Iwonski'] and s3.button("Finálně schválit", key=f"c_{row['ID']}", type="primary"):
-                            df.loc[df['ID'] == str(row['ID']), 'Cejka'] = f"Martin ({dnes})"
+                            df.loc[df['ID'] == str(row['ID']), 'Cejka'] = f"Martin ({dnes_full})"
                             conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
                         else: s3.warning("Čeká na Jirku")
                     else:
@@ -184,17 +186,17 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                         else: s3.write("⏳ Blokováno")
 
 # ==========================================
-# 3. ZÁLOŽKA OSTATNÍ (POUZE MARTIN URBAN)
+# 3. ZÁLOŽKA OSTATNÍ (JEN URBAN)
 # ==========================================
 with tabs[len(nazvy_sluzeb)]:
-    st.subheader("📦 Partneři - Přímé schvalování (Urban)")
+    st.subheader("📦 Ostatní partneři - Přímé zadávání")
     if role != "Martin Urban":
         st.warning("Tato sekce je určena pouze pro Martina Urbana.")
     else:
         for p in OSTATNI_PARTNERI:
             z = df_mesic[(df_mesic["Sluzba"] == "Ostatní") & (df_mesic["Agregator"] == p)]
             u_k = f"ost_{p}".replace(" ", "_")
-            dnes = datetime.now().strftime("%d.%m.%Y")
+            dnes_full = datetime.now().strftime("%d.%m.%Y")
             if z.empty:
                 with st.container(border=True):
                     c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
@@ -204,7 +206,7 @@ with tabs[len(nazvy_sluzeb)]:
                     in_m = c4.selectbox("Měna", ["Kč", "EUR"], key=f"vm_{u_k}")
                     if st.button("Uložit", key=f"vb_{u_k}", type="primary", disabled=in_c is None):
                         n_id = str(datetime.now().timestamp())
-                        n_z = pd.DataFrame([{"ID": n_id, "Mesic": vybrany_mesic, "Sluzba": "Ostatní", "Agregator": p, "Castka": in_c, "Mena": in_m, "Urban": f"Urban ({dnes})", "Iwonski": "N/A", "Cejka": "N/A", "Provize": in_p if in_p else 0}])
+                        n_z = pd.DataFrame([{"ID": n_id, "Mesic": vybrany_mesic, "Sluzba": "Ostatní", "Agregator": p, "Castka": in_c, "Mena": in_m, "Urban": f"Urban ({dnes_full})", "Iwonski": "N/A", "Cejka": "N/A", "Provize": in_p if in_p else 0}])
                         df = pd.concat([df, n_z], ignore_index=True)
                         conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
             else:
@@ -219,45 +221,37 @@ with tabs[len(nazvy_sluzeb)]:
                         conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
 
 # ==========================================
-# 4. ANALYTIKA (OPRAVENÁ)
+# 4. ANALYTIKA (ODDĚLENÁ)
 # ==========================================
 with tabs[-2]:
-    st.subheader("📈 Analytika nákladů a provizí")
+    st.subheader("📈 Analytika nákladů")
     if df.empty or df['Castka'].sum() == 0:
-        st.info("Zatím nejsou data pro analytiku.")
+        st.info("Zatím nejsou data.")
     else:
-        m_sel = st.radio("Měna grafů:", ["Kč", "EUR"], horizontal=True)
+        m_sel = st.radio("Vyberte měnu grafů:", ["Kč", "EUR"], horizontal=True)
         dg = df[df['Mena'] == m_sel].copy()
         if dg.empty:
             st.warning(f"Žádná data v měně {m_sel}")
         else:
             dg['D'] = pd.to_datetime(dg['Mesic'], format='%m/%Y')
             dg = dg.sort_values('D')
-            
             an1, an2 = st.tabs(["Standardní Služby", "Ostatní Partneři"])
             
             with an1:
                 ds = dg[dg['Sluzba'] != 'Ostatní']
-                if ds.empty: st.info("Žádná data pro standardní služby v této měně.")
-                else:
+                if not ds.empty:
                     st.markdown(f"#### Vývoj podle HLAVNÍCH SLUŽEB ({m_sel})")
-                    pivot_s = ds.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum')
-                    pivot_s.index = pd.to_datetime(pivot_s.index, format='%m/%Y')
-                    pivot_s = pivot_s.sort_index().index.strftime('%m/%Y') # Zajistí chronologii
                     st.bar_chart(ds.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum').loc[ds['Mesic'].unique()])
-            
+                else: st.info("Žádná data pro standardní služby.")
+
             with an2:
                 do = dg[dg['Sluzba'] == 'Ostatní']
-                if do.empty: st.info("Žádná data pro ostatní partnery v této měně.")
-                else:
-                    # Oprava analytiky Ostatní - grafy pro Částku i Provizi
+                if not do.empty:
                     st.markdown(f"#### Vývoj ČÁSTEK u partnerů ({m_sel})")
-                    pivot_c = do.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum')
-                    st.line_chart(pivot_c)
-                    
+                    st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[do['Mesic'].unique()])
                     st.markdown(f"#### Vývoj PROVIZÍ u partnerů ({m_sel})")
-                    pivot_p = do.pivot_table(index='Mesic', columns='Agregator', values='Provize', aggfunc='sum')
-                    st.line_chart(pivot_p)
+                    st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Provize', aggfunc='sum').loc[do['Mesic'].unique()])
+                else: st.info("Žádná data pro ostatní partnery.")
 
 # ==========================================
 # 5. HISTORIE A EXCEL EXPORT
@@ -266,7 +260,6 @@ with tabs[-1]:
     st.subheader("🗂️ Kompletní historie")
     if not df.empty:
         exp_df = df.drop(columns=["ID"])
-        # Generování Excelu
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine='openpyxl') as w: 
             exp_df.to_excel(w, index=False, sheet_name='Fakturace')
