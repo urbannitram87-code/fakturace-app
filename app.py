@@ -85,7 +85,6 @@ for i, sluzba in enumerate(nazvy_sluzeb):
             dnes = datetime.now().strftime("%d.%m.%Y")
             
             with st.container(border=True):
-                # --- CHYBÍ DATA ---
                 if zaznam.empty:
                     c1, c2, c3 = st.columns([1, 1, 1])
                     if je_po_termínu:
@@ -107,24 +106,18 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                                 conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
                     else:
                         c2.info("⏳ Čeká na Urbana")
-
-                # --- ZADÁNO - SCHVALOVACÍ WORKFLOW ---
                 else:
                     row = zaznam.iloc[0]
                     c_f = f"{float(row['Castka']):,.2f} {row['Mena']}".replace(",", " ")
-                    
                     col_l, col_r, col_d = st.columns([2, 2, 1])
                     col_l.markdown(f"### ✅ {agregator}")
                     col_r.markdown(f"### {c_f}")
                     if role == "Martin Urban" and col_d.button("🗑️ Smazat", key=f"del_{row['ID']}"):
                         df = df[df['ID'] != str(row['ID'])]
                         conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
-
                     st.divider()
                     s1, s2, s3 = st.columns(3)
                     s1.success(f"**Urban:** {row['Urban']}")
-                    
-                    # Jirka Iwonski
                     if row['Iwonski']: s2.success(f"**Jiw:** {row['Iwonski']}")
                     elif role == "Jiří Iwonski":
                         if s2.button("Schválit (Jiw)", key=f"i_{row['ID']}", type="primary"):
@@ -137,8 +130,6 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                             p, t = urllib.parse.quote(f"Urgence: {agregator}"), urllib.parse.quote(f"Ahoj Jiří, prosím o schválení {c_f} pro {agregator}. Díky!")
                             s2.link_button("✉️ Urgovat", f"mailto:{EMAIL_IWONSKI}?subject={p}&body={t}")
                         else: s2.warning("⏳ Čeká na Iwonskiho")
-
-                    # Martin Čejka
                     if row['Cejka']: s3.success(f"**Martin:** {row['Cejka']}")
                     elif role == "Martin Čejka":
                         if row['Iwonski'] and s3.button("Finálně schválit", key=f"c_{row['ID']}", type="primary"):
@@ -166,6 +157,7 @@ with tabs[len(nazvy_sluzeb)]:
         for p in OSTATNI_PARTNERI:
             z = df_mesic[(df_mesic["Sluzba"] == "Ostatní") & (df_mesic["Agregator"] == p)]
             u_k = f"ost_{p}".replace(" ", "_")
+            dnes = datetime.now().strftime("%d.%m.%Y")
             if z.empty:
                 with st.container(border=True):
                     c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
@@ -190,23 +182,38 @@ with tabs[len(nazvy_sluzeb)]:
                         conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
 
 # ==========================================
-# 4. ANALYTIKA
+# 4. ANALYTIKA (ODDĚLENÁ PRO OSTATNÍ)
 # ==========================================
 with tabs[-2]:
-    st.subheader("📈 Analytika nákladů")
-    if df.empty or df['Castka'].sum() == 0: st.info("Zatím nejsou data.")
+    st.subheader("📈 Analytika nákladů a provizí")
+    if df.empty or df['Castka'].sum() == 0:
+        st.info("Zatím nejsou data pro analytiku.")
     else:
         m_sel = st.radio("Měna grafů:", ["Kč", "EUR"], horizontal=True)
         dg = df[df['Mena'] == m_sel].copy()
-        if dg.empty: st.warning(f"Žádná data v {m_sel}")
-        else:
-            dg['D'] = pd.to_datetime(dg['Mesic'], format='%m/%Y')
-            dg = dg.sort_values('D')
-            st.markdown(f"#### Vývoj podle SLUŽEB ({m_sel})")
-            st.bar_chart(dg.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum').loc[dg['Mesic'].unique()])
-            st.markdown(f"#### Detail AGREGÁTORŮ ({m_sel})")
-            s_sel = st.selectbox("Vyberte službu:", dg['Sluzba'].unique())
-            st.line_chart(dg[dg['Sluzba'] == s_sel].pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[dg['Mesic'].unique()])
+        dg['D'] = pd.to_datetime(dg['Mesic'], format='%m/%Y')
+        dg = dg.sort_values('D')
+
+        an1, an2 = st.tabs(["Standardní Služby", "Ostatní Partneři"])
+
+        with an1:
+            ds = dg[dg['Sluzba'] != 'Ostatní']
+            if ds.empty: st.warning("Žádná data pro standardní služby.")
+            else:
+                st.markdown(f"#### Vývoj podle HLAVNÍCH SLUŽEB ({m_sel})")
+                st.bar_chart(ds.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum').loc[ds['Mesic'].unique()])
+                st.markdown(f"#### Detail AGREGÁTORŮ")
+                s_sel = st.selectbox("Vyberte službu:", ds['Sluzba'].unique())
+                st.line_chart(ds[ds['Sluzba'] == s_sel].pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[ds['Mesic'].unique()])
+
+        with an2:
+            do = dg[dg['Sluzba'] == 'Ostatní']
+            if do.empty: st.warning("Žádná data pro ostatní partnery.")
+            else:
+                st.markdown(f"#### Vývoj ČÁSTEK u partnerů ({m_sel})")
+                st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[do['Mesic'].unique()])
+                st.markdown(f"#### Vývoj PROVIZÍ u partnerů ({m_sel})")
+                st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Provize', aggfunc='sum').loc[do['Mesic'].unique()])
 
 # ==========================================
 # 5. HISTORIE A EXCEL EXPORT
