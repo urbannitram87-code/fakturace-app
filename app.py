@@ -9,22 +9,12 @@ st.set_page_config(page_title="Fakturace - Schvalování", layout="wide")
 # MAPOVÁNÍ SLUŽEB A AGREGÁTORŮ
 # ==========================================
 SLUZBY_AGREGATORI = {
-    "Audiotex": [
-        "ATS", "T-Mobile", "Quantcom (ex. DIAL)"
-    ],
-    "Premium SMS": [
-        "ATS", "ATS (s doručenkou)", "BOKU", "ComGate Payments", 
-        "ComGate (SMS s doručenkou)", "GLOBDATA", "Comverga", "Fórum dárců"
-    ],
-    "M-platba": [
-        "Apple", "ATS", "Docomo Digital (Bango)", "Globdata", 
-        "Boku Network Services Estonia OÜ (ex Fortumo) - Tidal", 
-        "Boku Network Services Estonia OÜ (ex Fortumo) - Ostatní", 
-        "GM Europe", "Google", "Boku (Microsoft)"
-    ]
+    "Audiotex": ["ATS", "T-Mobile", "Quantcom (ex. DIAL)"],
+    "Premium SMS": ["ATS", "ATS (s doručenkou)", "BOKU", "ComGate Payments", "ComGate (SMS s doručenkou)", "GLOBDATA", "Comverga", "Fórum dárců"],
+    "M-platba": ["Apple", "ATS", "Docomo Digital (Bango)", "Globdata", "Boku Network Services Estonia OÜ (ex Fortumo) - Tidal", "Boku Network Services Estonia OÜ (ex Fortumo) - Ostatní", "GM Europe", "Google", "Boku (Microsoft)"]
 }
 
-# Generování měsíců (od 02/2026 do konce roku 2027)
+# Generování měsíců
 mesice = [f"{m:02d}/2026" for m in range(2, 13)] + [f"{m:02d}/2027" for m in range(1, 13)]
 
 # --- PŘIPOJENÍ A NAČTENÍ DAT ---
@@ -44,140 +34,146 @@ def load_data():
 df = load_data()
 
 # --- POSTRANNÍ PANEL ---
-st.sidebar.title("Nastavení")
-role = st.sidebar.selectbox("Kdo právě schvaluje:", ["Martin Urban", "Jiří Iwonski", "Martin Čejka"])
-vybrany_mesic = st.sidebar.selectbox("Vyberte měsíc pro schvalování:", mesice)
+st.sidebar.title("⚙️ Nastavení")
+role = st.sidebar.selectbox("Přihlášen jako:", ["Martin Urban", "Jiří Iwonski", "Martin Čejka"])
+vybrany_mesic = st.sidebar.selectbox("Fakturační měsíc:", mesice)
 
 st.title(f"Fakturace: {vybrany_mesic}")
+st.write("Vyberte službu v záložkách níže. Každý agregátor má svou vlastní přehlednou kartu.")
 
-tab_schvalovani, tab_historie = st.tabs(["Položky ke schválení", "Celková historie"])
+# --- ZJIŠTĚNÍ ALERTU (Zda jsme po termínu) ---
+vybrany_m, vybrany_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
+aktualni_m, aktualni_r = datetime.now().month, datetime.now().year
+je_po_termínu = (aktualni_r > vybrany_r) or (aktualni_r == vybrany_r and aktualni_m >= vybrany_m)
+
+# Vytvoření záložek pro služby + 1 pro historii
+nazvy_sluzeb = list(SLUZBY_AGREGATORI.keys())
+tabs = st.tabs(nazvy_sluzeb + ["🗂️ Celková historie"])
+
+df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
 
 # ==========================================
-# ZÁLOŽKA 1: SCHVALOVÁNÍ (Checklist)
+# VYKRESLENÍ ZÁLOŽEK PRO JEDNOTLIVÉ SLUŽBY
 # ==========================================
-with tab_schvalovani:
-    st.write("Zde je seznam všech očekávaných faktur pro tento měsíc.")
-    
-    # Zjištění, zda už je konec měsíce (pro červený alert)
-    # Převedeme vybraný měsíc a aktuální čas na porovnatelný formát
-    vybrany_m, vybrany_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
-    aktualni_m, aktualni_r = datetime.now().month, datetime.now().year
-    
-    # Alert se ukáže, pokud jsme v aktuálním měsíci (nebo starším) a chybí data
-    je_po_termínu = (aktualni_r > vybrany_r) or (aktualni_r == vybrany_r and aktualni_m >= vybrany_m)
-
-    df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
-
-    # Hlavička tabulky
-    h1, h2, h3, h4, h5, h6 = st.columns([2.5, 2, 1.5, 1.5, 1.5, 1.5])
-    h1.write("**Služba / Agregátor**")
-    h2.write("**Částka a Měna**")
-    h3.write("**Martin Urban**")
-    h4.write("**Jiří Iwonski**")
-    h5.write("**Martin Čejka**")
-    h6.write("**Akce**")
-    st.markdown("---")
-
-    # Procházíme natvrdo VŠECHNY služby a agregátory podle vašeho seznamu
-    for sluzba, agregatori in SLUZBY_AGREGATORI.items():
-        for agregator in agregatori:
-            # Zkusíme najít, jestli už k této kombinaci pro daný měsíc existuje záznam
+for i, sluzba in enumerate(nazvy_sluzeb):
+    with tabs[i]:
+        st.subheader(f"Přehled pro: {sluzba}")
+        
+        # Projdeme všechny agregátory pro danou službu
+        for agregator in SLUZBY_AGREGATORI[sluzba]:
             zaznam = df_mesic[(df_mesic["Sluzba"] == sluzba) & (df_mesic["Agregator"] == agregator)]
-            
             unikatni_klic = f"{sluzba}_{agregator}".replace(" ", "_")
             dnes = datetime.now().strftime("%d.%m.")
             
-            c1, c2, c3, c4, c5, c6 = st.columns([2.5, 2, 1.5, 1.5, 1.5, 1.5])
-            
-            # --- POKUD ZÁZNAM CHYBÍ (Ještě nebylo zadáno) ---
-            if zaznam.empty:
-                # Nastavení červeného alertu, pokud chybí vyplnění a už by mělo být
-                if je_po_termínu:
-                    c1.markdown(f"**:red[🚨 {sluzba}]**\n\n**:red[*( {agregator} )*]**")
-                else:
-                    c1.write(f"**{sluzba}**\n\n*( {agregator} )*")
+            # KARTA PRO KAŽDÉHO AGREGÁTORA (Vytvoří hezký rámeček)
+            with st.container(border=True):
                 
-                if role == "Martin Urban":
-                    # Urban vidí políčka pro zadání
-                    with c2:
-                        input_castka = st.number_input("Částka", min_value=0.0, format="%.2f", step=100.0, key=f"castka_{unikatni_klic}", label_visibility="collapsed")
-                        input_mena = st.selectbox("Měna", ["Kč", "EUR"], key=f"mena_{unikatni_klic}", label_visibility="collapsed")
+                # --- POKUD ZÁZNAM CHYBÍ (Čeká se na zadání) ---
+                if zaznam.empty:
+                    c1, c2, c3 = st.columns([1, 1, 1])
                     
-                    c3.write("⏳ Čeká na zadání")
-                    c4.write("⏳")
-                    c5.write("⏳")
+                    # Název agregátoru (Červený, pokud je po termínu)
+                    if je_po_termínu:
+                        c1.markdown(f"### 🚨 :red[{agregator}]")
+                        c1.caption(":red[Chybí částka za tento měsíc!]")
+                    else:
+                        c1.markdown(f"### {agregator}")
+                        c1.caption("Čeká se na zadání...")
                     
-                    with c6:
-                        if st.button("Schválit", key=f"btn_{unikatni_klic}", type="primary"):
-                            nove_id = str(datetime.now().timestamp())
-                            novy_zaznam = pd.DataFrame([{
-                                "ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator,
-                                "Castka": input_castka, "Mena": input_mena, 
-                                "Urban": f"Urban ({dnes})", "Iwonski": "", "Cejka": ""
-                            }])
-                            df = pd.concat([df, novy_zaznam], ignore_index=True)
-                            conn.update(worksheet="Data", data=df)
-                            st.cache_data.clear()
-                            st.rerun()
-                else:
-                    # Ostatní role jen vidí, že se čeká na Urbana
-                    c2.write("---")
-                    c3.write("⏳ Čeká na M. Urbana")
-                    c4.write("⏳")
-                    c5.write("⏳")
-                    c6.write("")
-
-            # --- POKUD ZÁZNAM EXISTUJE (Už někdo zadal částku) ---
-            else:
-                row = zaznam.iloc[0]
-                id_zaznamu = str(row['ID'])
-                
-                c1.write(f"**{row['Sluzba']}**\n\n*( {row['Agregator']} )*")
-                
-                try:
-                    castka_format = f"{float(row['Castka']):,.2f} {row['Mena']}".replace(",", " ")
-                except:
-                    castka_format = f"{row['Castka']} {row['Mena']}"
-                c2.write(f"**{castka_format}**")
-                
-                c3.write("✅ " + row['Urban'] if row['Urban'] != "" else "⏳ Čeká")
-                c4.write("✅ " + row['Iwonski'] if row['Iwonski'] != "" else "⏳ Čeká")
-                c5.write("✅ " + row['Cejka'] if row['Cejka'] != "" else "⏳ Čeká")
-                
-                # Tlačítka pro další role
-                with c6:
+                    # Zobrazíme formulář pro Urbana
                     if role == "Martin Urban":
-                        st.write("Hotovo")
-                            
-                    elif role == "Jiří Iwonski":
-                        if row['Iwonski'] == "":
-                            if st.button("Schválit", key=f"i_{id_zaznamu}", type="primary"):
+                        with c2:
+                            input_castka = st.number_input("Zadat částku", min_value=0.0, format="%.2f", step=100.0, key=f"castka_{unikatni_klic}")
+                        with c3:
+                            input_mena = st.selectbox("Měna", ["Kč", "EUR"], key=f"mena_{unikatni_klic}")
+                            st.write("") # Odřádkování pro srovnání tlačítek
+                            if st.button("Uložit a schválit", key=f"btn_{unikatni_klic}", type="primary", use_container_width=True):
+                                nove_id = str(datetime.now().timestamp())
+                                novy_zaznam = pd.DataFrame([{
+                                    "ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator,
+                                    "Castka": input_castka, "Mena": input_mena, 
+                                    "Urban": f"Urban ({dnes})", "Iwonski": "", "Cejka": ""
+                                }])
+                                df = pd.concat([df, novy_zaznam], ignore_index=True)
+                                conn.update(worksheet="Data", data=df)
+                                st.cache_data.clear()
+                                st.rerun()
+                    else:
+                        c2.info("⏳ Čeká se, až Martin Urban zadá částku.")
+
+                # --- POKUD ZÁZNAM EXISTUJE (Je zadáno) ---
+                else:
+                    row = zaznam.iloc[0]
+                    id_zaznamu = str(row['ID'])
+                    
+                    try:
+                        castka_format = f"{float(row['Castka']):,.2f} {row['Mena']}".replace(",", " ")
+                    except:
+                        castka_format = f"{row['Castka']} {row['Mena']}"
+                    
+                    # Horní řádek karty (Název a částka)
+                    col_nadpis, col_castka, col_akce = st.columns([2, 2, 1])
+                    col_nadpis.markdown(f"### ✅ {agregator}")
+                    col_castka.markdown(f"### {castka_format}")
+                    
+                    # Možnost smazání (Pouze pro Urbana)
+                    with col_akce:
+                        if role == "Martin Urban":
+                            if st.button("🗑️ Smazat / Opravit", key=f"del_{id_zaznamu}"):
+                                # Odstraní záznam z tabulky
+                                df = df[df['ID'] != id_zaznamu]
+                                conn.update(worksheet="Data", data=df)
+                                st.cache_data.clear()
+                                st.rerun()
+
+                    st.divider() # Jemná oddělovací čára v rámci karty
+                    
+                    # Spodní řádek karty (Schvalovací workflow)
+                    s1, s2, s3 = st.columns(3)
+                    
+                    # Urban
+                    s1.write("**Zadal (Urban):**")
+                    s1.success(row['Urban'])
+                    
+                    # Iwonski
+                    s2.write("**Schválil (Iwonski):**")
+                    if row['Iwonski'] != "":
+                        s2.success(row['Iwonski'])
+                    else:
+                        if role == "Jiří Iwonski":
+                            if s2.button("Schválit za Iwonskiho", key=f"i_{id_zaznamu}", type="primary"):
                                 df.loc[df['ID'] == id_zaznamu, 'Iwonski'] = f"Jiw ({dnes})"
                                 conn.update(worksheet="Data", data=df)
                                 st.cache_data.clear()
                                 st.rerun()
                         else:
-                            st.write("Hotovo")
+                            s2.warning("⏳ Čeká na Iwonskiho")
                             
-                    elif role == "Martin Čejka":
-                        if row['Iwonski'] != "" and row['Cejka'] == "":
-                            if st.button("Schválit", key=f"c_{id_zaznamu}", type="primary"):
-                                df.loc[df['ID'] == id_zaznamu, 'Cejka'] = f"Martin ({dnes})"
-                                conn.update(worksheet="Data", data=df)
-                                st.cache_data.clear()
-                                st.rerun()
-                        elif row['Cejka'] != "":
-                            st.write("Schváleno 🎉")
+                    # Čejka
+                    s3.write("**Schválil (Čejka):**")
+                    if row['Cejka'] != "":
+                        s3.success(row['Cejka'])
+                    else:
+                        if role == "Martin Čejka":
+                            if row['Iwonski'] != "":
+                                if s3.button("Finálně schválit (Čejka)", key=f"c_{id_zaznamu}", type="primary"):
+                                    df.loc[df['ID'] == id_zaznamu, 'Cejka'] = f"Martin ({dnes})"
+                                    conn.update(worksheet="Data", data=df)
+                                    st.cache_data.clear()
+                                    st.rerun()
+                            else:
+                                s3.warning("⏳ Čeká na Iwonskiho")
                         else:
-                            st.write("Čeká na kolegy")
-                            
-            st.markdown("---") # Oddělovač řádků
+                            if row['Iwonski'] == "":
+                                s3.write("⏳ Zablokováno (Čeká na předchozí)")
+                            else:
+                                s3.warning("⏳ Čeká na Čejku")
 
 # ==========================================
-# ZÁLOŽKA 2: HISTORIE
+# ZÁLOŽKA HISTORIE
 # ==========================================
-with tab_historie:
-    st.subheader("Kompletní historie fakturací")
+with tabs[-1]:
+    st.subheader("🗂️ Kompletní historie fakturací")
     if df.empty:
         st.info("Databáze je zatím prázdná.")
     else:
