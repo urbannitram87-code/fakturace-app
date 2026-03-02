@@ -5,10 +5,11 @@ import urllib.parse
 import io
 from streamlit_gsheets import GSheetsConnection
 
-st.set_page_config(page_title="Fakturace - Schvalování", layout="wide")
+# Nastavení širokého rozvržení stránky
+st.set_page_config(page_title="O2 Fakturace - Schvalování", layout="wide")
 
 # ==========================================
-# MAPOVÁNÍ SLUŽEB A AGREGÁTORŮ
+# 1. KONFIGURACE PARTNERŮ A SLUŽEB
 # ==========================================
 SLUZBY_AGREGATORI = {
     "Audiotex": ["ATS", "T-Mobile", "Quantcom (ex. DIAL)"],
@@ -16,249 +17,205 @@ SLUZBY_AGREGATORI = {
     "M-platba": ["Apple", "ATS", "Docomo Digital (Bango)", "Globdata", "Boku Network Services Estonia OÜ (ex Fortumo) - Tidal", "Boku Network Services Estonia OÜ (ex Fortumo) - Ostatní", "GM Europe", "Google", "Boku (Microsoft)"]
 }
 
-# Reálné e-maily kolegů z O2
+OSTATNI_PARTNERI = ["Mobilní pohotovost", "Zásilkovna", "Teya", "KB SmartPay"]
+
+# E-maily pro schvalovatele
 EMAIL_IWONSKI = "jiri.iwonski@o2.cz"
 EMAIL_CEJKA = "martin.cejka@o2.cz"
 
+# Seznam měsíců pro výběr
 mesice = [f"{m:02d}/2026" for m in range(2, 13)] + [f"{m:02d}/2027" for m in range(1, 13)]
 
+# --- PŘIPOJENÍ K DATŮM ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
     try:
-        df = conn.read(worksheet="Data", usecols=list(range(9)))
+        df = conn.read(worksheet="Data", usecols=list(range(10)))
         if df.empty or "ID" not in df.columns:
-            return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka"])
+            return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka", "Provize"])
         df = df.fillna("")
         df['ID'] = df['ID'].astype(str)
         df['Castka'] = pd.to_numeric(df['Castka'], errors='coerce').fillna(0)
+        df['Provize'] = pd.to_numeric(df['Provize'], errors='coerce').fillna(0)
         return df
     except Exception:
-        return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka"])
+        return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka", "Provize"])
 
 df = load_data()
 
-# Funkce pro výpočet dní od schválení předchozím
+# Funkce pro výpočet zpoždění schvalování
 def zpozdeni_dnu(text_statusu):
     if not text_statusu or "(" not in text_statusu: return 0
     try:
-        datum_str = text_statusu.split("(")[1].replace(")", "") + str(datetime.now().year)
+        datum_str = text_statusu.split("(")[1].replace(")", "").strip()
         datum_schvaleni = datetime.strptime(datum_str, "%d.%m.%Y")
         return (datetime.now() - datum_schvaleni).days
     except:
         return 0
 
 # --- POSTRANNÍ PANEL ---
-st.sidebar.title("⚙️ Nastavení")
+st.sidebar.title("⚙️ Nastavení systému")
 role = st.sidebar.selectbox("Přihlášen jako:", ["Martin Urban", "Jiří Iwonski", "Martin Čejka"])
-vybrany_mesic = st.sidebar.selectbox("Fakturační měsíc:", mesice)
+vybrany_mesic = st.sidebar.selectbox("Fakturační období:", mesice)
 
 st.title(f"Fakturace: {vybrany_mesic}")
 
-# --- LOGIKA ALERTU (25. den NÁSLEDUJÍCÍHO měsíce) ---
-vybrany_m, vybrany_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
-deadline_m = 1 if vybrany_m == 12 else vybrany_m + 1
-deadline_r = vybrany_r + 1 if vybrany_m == 12 else vybrany_r
-deadline_datum = datetime(deadline_r, deadline_m, 25)
-
+# --- LOGIKA DEADLINE (25. den následujícího měsíce) ---
+v_m, v_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
+d_m = 1 if v_m == 12 else v_m + 1
+d_r = v_r + 1 if v_m == 12 else v_r
+deadline_datum = datetime(d_r, d_m, 25)
 je_po_termínu = datetime.now() > deadline_datum
 
+# Definice záložek
 nazvy_sluzeb = list(SLUZBY_AGREGATORI.keys())
-tabs = st.tabs(nazvy_sluzeb + ["📈 Analytika", "🗂️ Celková historie"])
+tabs = st.tabs(nazvy_sluzeb + ["📦 Ostatní", "📈 Analytika", "🗂️ Celková historie"])
 df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
 
 # ==========================================
-# VYKRESLENÍ ZÁLOŽEK SLUŽEB
+# 2. STANDARDNÍ SLUŽBY (3 KROKY SCHVÁLENÍ)
 # ==========================================
 for i, sluzba in enumerate(nazvy_sluzeb):
     with tabs[i]:
         st.subheader(f"Přehled pro: {sluzba}")
-        
         for agregator in SLUZBY_AGREGATORI[sluzba]:
             zaznam = df_mesic[(df_mesic["Sluzba"] == sluzba) & (df_mesic["Agregator"] == agregator)]
-            unikatni_klic = f"{sluzba}_{agregator}".replace(" ", "_")
-            dnes = datetime.now().strftime("%d.%m.")
+            u_key = f"{sluzba}_{agregator}".replace(" ", "_")
+            dnes = datetime.now().strftime("%d.%m.%Y")
             
             with st.container(border=True):
-                # --- CHYBÍ ZADÁNÍ ---
+                # --- CHYBÍ DATA ---
                 if zaznam.empty:
                     c1, c2, c3 = st.columns([1, 1, 1])
                     if je_po_termínu:
                         c1.markdown(f"### 🚨 :red[{agregator}]")
-                        c1.caption(f":red[Chybí částka! Termín byl 25.{deadline_m:02d}.]")
+                        c1.caption(f":red[Chybí částka! Deadline byl 25.{d_m:02d}.{d_r}]")
                     else:
                         c1.markdown(f"### {agregator}")
-                        c1.caption("Čeká se na zadání...")
+                        c1.caption("Čeká se na zadání částky...")
                     
                     if role == "Martin Urban":
                         with c2:
-                            # ZDE JE ZMĚNA: value=None a placeholder
-                            input_castka = st.number_input(
-                                "Zadat částku", 
-                                min_value=0.0, 
-                                value=None, 
-                                format="%.2f", 
-                                step=100.0, 
-                                key=f"castka_{unikatni_klic}",
-                                placeholder="Např. 50000"
-                            )
+                            in_c = st.number_input("Částka", min_value=0.0, value=None, format="%.2f", key=f"c_{u_key}", placeholder="Zadejte částku")
                         with c3:
-                            input_mena = st.selectbox("Měna", ["Kč", "EUR"], key=f"mena_{unikatni_klic}")
-                            
-                            # ZDE JE ZMĚNA: Tlačítko je neaktivní, pokud není zadaná částka
-                            povolit_ulozeni = input_castka is not None
-                            
-                            if st.button("Uložit a schválit", key=f"btn_{unikatni_klic}", type="primary", use_container_width=True, disabled=not povolit_ulozeni):
+                            in_m = st.selectbox("Měna", ["Kč", "EUR"], key=f"m_{u_key}")
+                            if st.button("Uložit a schválit", key=f"b_{u_key}", type="primary", use_container_width=True, disabled=in_c is None):
                                 nove_id = str(datetime.now().timestamp())
-                                novy_zaznam = pd.DataFrame([{
-                                    "ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator,
-                                    "Castka": input_castka, "Mena": input_mena, 
-                                    "Urban": f"Urban ({dnes})", "Iwonski": "", "Cejka": ""
-                                }])
-                                df = pd.concat([df, novy_zaznam], ignore_index=True)
-                                conn.update(worksheet="Data", data=df)
-                                st.cache_data.clear()
-                                st.rerun()
+                                n_z = pd.DataFrame([{"ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator, "Castka": in_c, "Mena": in_m, "Urban": f"Urban ({dnes})", "Iwonski": "", "Cejka": "", "Provize": 0}])
+                                df = pd.concat([df, n_z], ignore_index=True)
+                                conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
                     else:
-                        c2.info("⏳ Čeká se na Martina Urbana")
+                        c2.info("⏳ Čeká na Urbana")
 
-                # --- JE ZADÁNO ---
+                # --- ZADÁNO - SCHVALOVACÍ WORKFLOW ---
                 else:
                     row = zaznam.iloc[0]
-                    id_zaznamu = str(row['ID'])
-                    castka_format = f"{float(row['Castka']):,.2f} {row['Mena']}".replace(",", " ") if row['Castka'] else ""
+                    c_f = f"{float(row['Castka']):,.2f} {row['Mena']}".replace(",", " ")
                     
-                    col_nadpis, col_castka, col_akce = st.columns([2, 2, 1])
-                    col_nadpis.markdown(f"### ✅ {agregator}")
-                    col_castka.markdown(f"### {castka_format}")
-                    
-                    with col_akce:
-                        if role == "Martin Urban":
-                            if st.button("🗑️ Smazat/Opravit", key=f"del_{id_zaznamu}"):
-                                df = df[df['ID'] != id_zaznamu]
-                                conn.update(worksheet="Data", data=df)
-                                st.cache_data.clear()
-                                st.rerun()
+                    col_l, col_r, col_d = st.columns([2, 2, 1])
+                    col_l.markdown(f"### ✅ {agregator}")
+                    col_r.markdown(f"### {c_f}")
+                    if role == "Martin Urban" and col_d.button("🗑️ Smazat", key=f"del_{row['ID']}"):
+                        df = df[df['ID'] != str(row['ID'])]
+                        conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
 
                     st.divider()
                     s1, s2, s3 = st.columns(3)
+                    s1.success(f"**Urban:** {row['Urban']}")
                     
-                    # URBAN
-                    s1.write("**Zadal (Urban):**")
-                    s1.success(row['Urban'])
-                    
-                    # IWONSKI
-                    s2.write("**Schválil (Iwonski):**")
-                    if row['Iwonski'] != "":
-                        s2.success(row['Iwonski'])
+                    # Jirka Iwonski
+                    if row['Iwonski']: s2.success(f"**Jiw:** {row['Iwonski']}")
+                    elif role == "Jiří Iwonski":
+                        if s2.button("Schválit (Jiw)", key=f"i_{row['ID']}", type="primary"):
+                            df.loc[df['ID'] == str(row['ID']), 'Iwonski'] = f"Jiw ({dnes})"
+                            conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
                     else:
-                        if role == "Jiří Iwonski":
-                            if s2.button("Schválit za Iwonskiho", key=f"i_{id_zaznamu}", type="primary"):
-                                df.loc[df['ID'] == id_zaznamu, 'Iwonski'] = f"Jiw ({dnes})"
-                                conn.update(worksheet="Data", data=df)
-                                st.cache_data.clear()
-                                st.rerun()
-                        else:
-                            dny_cekani = zpozdeni_dnu(row['Urban'])
-                            if dny_cekani >= 5:
-                                s2.error(f"⏳ Čeká na Iwonskiho ({dny_cekani} dní)")
-                                predmet = urllib.parse.quote(f"Urgence schválení: {agregator} za {vybrany_mesic}")
-                                telo = urllib.parse.quote(f"Ahoj Jiří,\n\nprosím tě o schválení částky {castka_format} pro {agregator} v naší schvalovací aplikaci.\n\nDíky, Martin")
-                                s2.link_button("✉️ Poslat urgenci", f"mailto:{EMAIL_IWONSKI}?subject={predmet}&body={telo}")
-                            else:
-                                s2.warning(f"⏳ Čeká na Iwonskiho")
-                            
-                    # ČEJKA
-                    s3.write("**Schválil (Čejka):**")
-                    if row['Cejka'] != "":
-                        s3.success(row['Cejka'])
+                        dny = zpozdeni_dnu(row['Urban'])
+                        if dny >= 5:
+                            s2.error(f"⏳ Čeká ({dny} dní)")
+                            p, t = urllib.parse.quote(f"Urgence: {agregator}"), urllib.parse.quote(f"Ahoj Jiří, prosím o schválení {c_f} pro {agregator}. Díky!")
+                            s2.link_button("✉️ Urgovat", f"mailto:{EMAIL_IWONSKI}?subject={p}&body={t}")
+                        else: s2.warning("⏳ Čeká na Iwonskiho")
+
+                    # Martin Čejka
+                    if row['Cejka']: s3.success(f"**Martin:** {row['Cejka']}")
+                    elif role == "Martin Čejka":
+                        if row['Iwonski'] and s3.button("Finálně schválit", key=f"c_{row['ID']}", type="primary"):
+                            df.loc[df['ID'] == str(row['ID']), 'Cejka'] = f"Martin ({dnes})"
+                            conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
+                        else: s3.warning("Čeká na Jirku")
                     else:
-                        if role == "Martin Čejka":
-                            if row['Iwonski'] != "":
-                                if s3.button("Finálně schválit", key=f"c_{id_zaznamu}", type="primary"):
-                                    df.loc[df['ID'] == id_zaznamu, 'Cejka'] = f"Martin ({dnes})"
-                                    conn.update(worksheet="Data", data=df)
-                                    st.cache_data.clear()
-                                    st.rerun()
-                            else:
-                                s3.warning("⏳ Čeká na Iwonskiho")
-                        else:
-                            if row['Iwonski'] != "":
-                                dny_cekani = zpozdeni_dnu(row['Iwonski'])
-                                if dny_cekani >= 5:
-                                    s3.error(f"⏳ Čeká na Čejku ({dny_cekani} dní)")
-                                    predmet = urllib.parse.quote(f"Urgence schválení: {agregator} za {vybrany_mesic}")
-                                    telo = urllib.parse.quote(f"Ahoj Martine,\n\nprosím tě o finální schválení částky {castka_format} pro {agregator} v naší schvalovací aplikaci.\n\nDíky, Martin")
-                                    s3.link_button("✉️ Poslat urgenci", f"mailto:{EMAIL_CEJKA}?subject={predmet}&body={telo}")
-                                else:
-                                    s3.warning("⏳ Čeká na Čejku")
-                            else:
-                                s3.write("⏳ Zablokováno (Čeká na Iwonskiho)")
+                        if row['Iwonski']:
+                            dny = zpozdeni_dnu(row['Iwonski'])
+                            if dny >= 5:
+                                s3.error(f"⏳ Čeká ({dny} dní)")
+                                p, t = urllib.parse.quote(f"Urgence: {agregator}"), urllib.parse.quote(f"Ahoj Martine, prosím o schválení {c_f} pro {agregator}. Díky!")
+                                s3.link_button("✉️ Urgovat", f"mailto:{EMAIL_CEJKA}?subject={p}&body={t}")
+                            else: s3.warning("⏳ Čeká na Čejku")
+                        else: s3.write("⏳ Blokováno")
 
 # ==========================================
-# ZÁLOŽKA ANALYTIKA
+# 3. ZÁLOŽKA OSTATNÍ (POUZE MARTIN URBAN)
+# ==========================================
+with tabs[len(nazvy_sluzeb)]:
+    st.subheader("📦 Partneři - Přímé schvalování (Urban)")
+    if role != "Martin Urban":
+        st.warning("Tato sekce je určena pouze pro Martina Urbana.")
+    else:
+        for p in OSTATNI_PARTNERI:
+            z = df_mesic[(df_mesic["Sluzba"] == "Ostatní") & (df_mesic["Agregator"] == p)]
+            u_k = f"ost_{p}".replace(" ", "_")
+            if z.empty:
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
+                    c1.markdown(f"### {p}")
+                    in_c = c2.number_input("Částka", min_value=0.0, value=None, key=f"vc_{u_k}", placeholder="Kč/EUR")
+                    in_p = c3.number_input("Provize", min_value=0.0, value=None, key=f"vp_{u_k}", placeholder="Provize")
+                    in_m = c4.selectbox("Měna", ["Kč", "EUR"], key=f"vm_{u_k}")
+                    if st.button("Uložit", key=f"vb_{u_k}", type="primary", disabled=in_c is None):
+                        n_id = str(datetime.now().timestamp())
+                        n_z = pd.DataFrame([{"ID": n_id, "Mesic": vybrany_mesic, "Sluzba": "Ostatní", "Agregator": p, "Castka": in_c, "Mena": in_m, "Urban": f"Urban ({dnes})", "Iwonski": "N/A", "Cejka": "N/A", "Provize": in_p if in_p else 0}])
+                        df = pd.concat([df, n_z], ignore_index=True)
+                        conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
+            else:
+                row = z.iloc[0]
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([1.5, 1, 1, 1])
+                    c1.markdown(f"### ✅ {p}")
+                    c2.metric("Částka", f"{row['Castka']:,.2f} {row['Mena']}".replace(",", " "))
+                    c3.metric("Provize", f"{row['Provize']:,.2f} {row['Mena']}".replace(",", " "))
+                    if c4.button("🗑️ Smazat", key=f"do_{row['ID']}"):
+                        df = df[df['ID'] != str(row['ID'])]
+                        conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
+
+# ==========================================
+# 4. ANALYTIKA
 # ==========================================
 with tabs[-2]:
-    st.subheader("📈 Analytické přehledy")
-    
-    if df.empty or df['Castka'].sum() == 0:
-        st.info("Zatím není dostatek dat pro zobrazení analytiky. Zadejte nejprve nějaké částky.")
+    st.subheader("📈 Analytika nákladů")
+    if df.empty or df['Castka'].sum() == 0: st.info("Zatím nejsou data.")
     else:
-        zobrazit_menu = st.radio("Vyberte měnu pro zobrazení v grafech:", ["Kč", "EUR"], horizontal=True)
-        df_graf = df[df['Mena'] == zobrazit_menu].copy()
-        
-        if df_graf.empty:
-            st.warning(f"Zatím nebyly zadány žádné faktury v měně {zobrazit_menu}.")
+        m_sel = st.radio("Měna grafů:", ["Kč", "EUR"], horizontal=True)
+        dg = df[df['Mena'] == m_sel].copy()
+        if dg.empty: st.warning(f"Žádná data v {m_sel}")
         else:
-            df_graf['Datum'] = pd.to_datetime(df_graf['Mesic'], format='%m/%Y', errors='coerce')
-            df_graf = df_graf.sort_values('Datum')
-
-            st.markdown("---")
-            st.markdown(f"### 📊 Vývoj podle HLAVNÍCH SLUŽEB v čase ({zobrazit_menu})")
-            
-            pivot_sluzby = df_graf.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum', fill_value=0)
-            pivot_sluzby.index = pd.to_datetime(pivot_sluzby.index, format='%m/%Y')
-            pivot_sluzby = pivot_sluzby.sort_index()
-            pivot_sluzby.index = pivot_sluzby.index.strftime('%m/%Y')
-            
-            st.bar_chart(pivot_sluzby)
-
-            st.markdown("---")
-            st.markdown(f"### 🔍 Vývoj podle AGREGÁTORŮ v čase ({zobrazit_menu})")
-            
-            vybrana_sluzba = st.selectbox("Vyberte službu pro detailní pohled na její agregátory:", df_graf['Sluzba'].unique())
-            df_agregatori = df_graf[df_graf['Sluzba'] == vybrana_sluzba]
-            
-            pivot_agregatori = df_agregatori.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum', fill_value=0)
-            pivot_agregatori.index = pd.to_datetime(pivot_agregatori.index, format='%m/%Y')
-            pivot_agregatori = pivot_agregatori.sort_index()
-            pivot_agregatori.index = pivot_agregatori.index.strftime('%m/%Y')
-            
-            st.line_chart(pivot_agregatori)
+            dg['D'] = pd.to_datetime(dg['Mesic'], format='%m/%Y')
+            dg = dg.sort_values('D')
+            st.markdown(f"#### Vývoj podle SLUŽEB ({m_sel})")
+            st.bar_chart(dg.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum').loc[dg['Mesic'].unique()])
+            st.markdown(f"#### Detail AGREGÁTORŮ ({m_sel})")
+            s_sel = st.selectbox("Vyberte službu:", dg['Sluzba'].unique())
+            st.line_chart(dg[dg['Sluzba'] == s_sel].pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[dg['Mesic'].unique()])
 
 # ==========================================
-# ZÁLOŽKA HISTORIE (Export Excel .xlsx)
+# 5. HISTORIE A EXCEL EXPORT
 # ==========================================
 with tabs[-1]:
-    st.subheader("🗂️ Kompletní historie fakturací")
-    
-    if df.empty:
-        st.info("Databáze je zatím prázdná.")
-    else:
-        sloupce_k_odstraneni = ["ID"]
-        if "Datum" in df.columns: sloupce_k_odstraneni.append("Datum")
-        df_zobrazeni = df.drop(columns=sloupce_k_odstraneni, errors='ignore')
-        
-        excel_buffer = io.BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-            df_zobrazeni.to_excel(writer, index=False, sheet_name='Historie_Fakturace')
-        
-        st.download_button(
-            label="📥 Stáhnout historii (Formát Excel .xlsx)",
-            data=excel_buffer.getvalue(),
-            file_name=f"Fakturace_Historie_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
-        
-        st.dataframe(df_zobrazeni, use_container_width=True, hide_index=True)
+    st.subheader("🗂️ Kompletní historie")
+    if not df.empty:
+        exp_df = df.drop(columns=["ID"])
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as w: exp_df.to_excel(w, index=False, sheet_name='Fakturace')
+        st.download_button("📥 Stáhnout Excel (.xlsx)", buf.getvalue(), f"Fakturace_{datetime.now().strftime('%Y-%m-%d')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.dataframe(exp_df, use_container_width=True, hide_index=True)
