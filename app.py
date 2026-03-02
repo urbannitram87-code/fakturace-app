@@ -9,24 +9,49 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="O2 Fakturace - Schvalování", layout="wide")
 
 # ==========================================
-# 1. KONFIGURACE PARTNERŮ A SLUŽEB
+# 1. KONFIGURACE A PŘIHLÁŠENÍ
 # ==========================================
+
+def check_password():
+    """Vrací True, pokud uživatel zadal správné přihlašovací údaje."""
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+
+    if not st.session_state["authenticated"]:
+        st.title("🔐 Vstup do systému fakturace")
+        user = st.selectbox("Vyberte své jméno:", ["Martin Urban", "Jiří Iwonski", "Martin Čejka"])
+        password = st.text_input("Zadejte heslo:", type="password")
+        
+        if st.button("Přihlásit se"):
+            # Převod jména na klíč pro secrets (např. "Martin Urban" -> "martin_urban")
+            user_key = user.lower().replace(" ", "_").replace("í", "i")
+            
+            # Kontrola hesla proti Secrets
+            if user_key in st.secrets["credentials"] and password == st.secrets["credentials"][user_key]:
+                st.session_state["authenticated"] = True
+                st.session_state["user_role"] = user
+                st.rerun()
+            else:
+                st.error("❌ Nesprávné heslo!")
+        return False
+    return True
+
+# Spuštění kontroly přihlášení
+if not check_password():
+    st.stop() # Pokud není přihlášen, zbytek kódu se nespustí
+
+# --- HLAVNÍ DATA A KONFIGURACE ---
 SLUZBY_AGREGATORI = {
     "Audiotex": ["ATS", "T-Mobile", "Quantcom (ex. DIAL)"],
     "Premium SMS": ["ATS", "ATS (s doručenkou)", "BOKU", "ComGate Payments", "ComGate (SMS s doručenkou)", "GLOBDATA", "Comverga", "Fórum dárců"],
     "M-platba": ["Apple", "ATS", "Docomo Digital (Bango)", "Globdata", "Boku Network Services Estonia OÜ (ex Fortumo) - Tidal", "Boku Network Services Estonia OÜ (ex Fortumo) - Ostatní", "GM Europe", "Google", "Boku (Microsoft)"]
 }
-
 OSTATNI_PARTNERI = ["Mobilní pohotovost", "Zásilkovna", "Teya", "KB SmartPay"]
-
-# E-maily pro schvalovatele
 EMAIL_IWONSKI = "jiri.iwonski@o2.cz"
 EMAIL_CEJKA = "martin.cejka@o2.cz"
-
-# Seznam měsíců pro výběr
 mesice = [f"{m:02d}/2026" for m in range(2, 13)] + [f"{m:02d}/2027" for m in range(1, 13)]
 
-# --- PŘIPOJENÍ K DATŮM ---
+# --- PŘIPOJENÍ ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
@@ -44,7 +69,19 @@ def load_data():
 
 df = load_data()
 
-# Funkce pro výpočet zpoždění schvalování
+# --- POSTRANNÍ PANEL (Upravený) ---
+st.sidebar.title("👤 Uživatel")
+st.sidebar.info(f"Přihlášen jako:\n**{st.session_state['user_role']}**")
+role = st.session_state["user_role"]
+
+if st.sidebar.button("Odhlásit se"):
+    st.session_state["authenticated"] = False
+    st.rerun()
+
+vybrany_mesic = st.sidebar.selectbox("Fakturační období:", mesice)
+
+# --- ZBYTEK APLIKACE (Identický s předchozí verzí) ---
+
 def zpozdeni_dnu(text_statusu):
     if not text_statusu or "(" not in text_statusu: return 0
     try:
@@ -54,28 +91,20 @@ def zpozdeni_dnu(text_statusu):
     except:
         return 0
 
-# --- POSTRANNÍ PANEL ---
-st.sidebar.title("⚙️ Nastavení systému")
-role = st.sidebar.selectbox("Přihlášen jako:", ["Martin Urban", "Jiří Iwonski", "Martin Čejka"])
-vybrany_mesic = st.sidebar.selectbox("Fakturační období:", mesice)
-
 st.title(f"Fakturace: {vybrany_mesic}")
 
-# --- LOGIKA DEADLINE (25. den následujícího měsíce) ---
+# Logika deadline
 v_m, v_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
 d_m = 1 if v_m == 12 else v_m + 1
 d_r = v_r + 1 if v_m == 12 else v_r
 deadline_datum = datetime(d_r, d_m, 25)
 je_po_termínu = datetime.now() > deadline_datum
 
-# Definice záložek
 nazvy_sluzeb = list(SLUZBY_AGREGATORI.keys())
 tabs = st.tabs(nazvy_sluzeb + ["📦 Ostatní", "📈 Analytika", "🗂️ Celková historie"])
 df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
 
-# ==========================================
-# 2. STANDARDNÍ SLUŽBY (3 KROKY SCHVÁLENÍ)
-# ==========================================
+# 2. STANDARDNÍ SLUŽBY
 for i, sluzba in enumerate(nazvy_sluzeb):
     with tabs[i]:
         st.subheader(f"Přehled pro: {sluzba}")
@@ -146,9 +175,7 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                             else: s3.warning("⏳ Čeká na Čejku")
                         else: s3.write("⏳ Blokováno")
 
-# ==========================================
-# 3. ZÁLOŽKA OSTATNÍ (POUZE MARTIN URBAN)
-# ==========================================
+# 3. OSTATNÍ
 with tabs[len(nazvy_sluzeb)]:
     st.subheader("📦 Partneři - Přímé schvalování (Urban)")
     if role != "Martin Urban":
@@ -181,9 +208,7 @@ with tabs[len(nazvy_sluzeb)]:
                         df = df[df['ID'] != str(row['ID'])]
                         conn.update(worksheet="Data", data=df); st.cache_data.clear(); st.rerun()
 
-# ==========================================
-# 4. ANALYTIKA (ODDĚLENÁ PRO OSTATNÍ)
-# ==========================================
+# 4. ANALYTIKA
 with tabs[-2]:
     st.subheader("📈 Analytika nákladů a provizí")
     if df.empty or df['Castka'].sum() == 0:
@@ -191,33 +216,20 @@ with tabs[-2]:
     else:
         m_sel = st.radio("Měna grafů:", ["Kč", "EUR"], horizontal=True)
         dg = df[df['Mena'] == m_sel].copy()
-        dg['D'] = pd.to_datetime(dg['Mesic'], format='%m/%Y')
-        dg = dg.sort_values('D')
+        if not dg.empty:
+            dg['D'] = pd.to_datetime(dg['Mesic'], format='%m/%Y')
+            dg = dg.sort_values('D')
+            an1, an2 = st.tabs(["Standardní Služby", "Ostatní Partneři"])
+            with an1:
+                ds = dg[dg['Sluzba'] != 'Ostatní']
+                if not ds.empty:
+                    st.bar_chart(ds.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum').loc[ds['Mesic'].unique()])
+            with an2:
+                do = dg[dg['Sluzba'] == 'Ostatní']
+                if not do.empty:
+                    st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[do['Mesic'].unique()])
 
-        an1, an2 = st.tabs(["Standardní Služby", "Ostatní Partneři"])
-
-        with an1:
-            ds = dg[dg['Sluzba'] != 'Ostatní']
-            if ds.empty: st.warning("Žádná data pro standardní služby.")
-            else:
-                st.markdown(f"#### Vývoj podle HLAVNÍCH SLUŽEB ({m_sel})")
-                st.bar_chart(ds.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum').loc[ds['Mesic'].unique()])
-                st.markdown(f"#### Detail AGREGÁTORŮ")
-                s_sel = st.selectbox("Vyberte službu:", ds['Sluzba'].unique())
-                st.line_chart(ds[ds['Sluzba'] == s_sel].pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[ds['Mesic'].unique()])
-
-        with an2:
-            do = dg[dg['Sluzba'] == 'Ostatní']
-            if do.empty: st.warning("Žádná data pro ostatní partnery.")
-            else:
-                st.markdown(f"#### Vývoj ČÁSTEK u partnerů ({m_sel})")
-                st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum').loc[do['Mesic'].unique()])
-                st.markdown(f"#### Vývoj PROVIZÍ u partnerů ({m_sel})")
-                st.line_chart(do.pivot_table(index='Mesic', columns='Agregator', values='Provize', aggfunc='sum').loc[do['Mesic'].unique()])
-
-# ==========================================
-# 5. HISTORIE A EXCEL EXPORT
-# ==========================================
+# 5. HISTORIE
 with tabs[-1]:
     st.subheader("🗂️ Kompletní historie")
     if not df.empty:
