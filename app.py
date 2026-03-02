@@ -30,13 +30,15 @@ def load_data():
             return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka"])
         df = df.fillna("")
         df['ID'] = df['ID'].astype(str)
+        # Zajištění, že částka je vždy číslo (pro grafy)
+        df['Castka'] = pd.to_numeric(df['Castka'], errors='coerce').fillna(0)
         return df
     except Exception:
         return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka"])
 
 df = load_data()
 
-# Funkce pro výpočet dní od schválení předchozím (např. z textu "Urban (17.02.)")
+# Funkce pro výpočet dní od schválení předchozím
 def zpozdeni_dnu(text_statusu):
     if not text_statusu or "(" not in text_statusu: return 0
     try:
@@ -55,7 +57,6 @@ st.title(f"Fakturace: {vybrany_mesic}")
 
 # --- LOGIKA ALERTU (25. den NÁSLEDUJÍCÍHO měsíce) ---
 vybrany_m, vybrany_r = int(vybrany_mesic.split('/')[0]), int(vybrany_mesic.split('/')[1])
-# Posuneme měsíc o 1 dopředu (ošetření přelomu roku)
 deadline_m = 1 if vybrany_m == 12 else vybrany_m + 1
 deadline_r = vybrany_r + 1 if vybrany_m == 12 else vybrany_r
 deadline_datum = datetime(deadline_r, deadline_m, 25)
@@ -63,11 +64,12 @@ deadline_datum = datetime(deadline_r, deadline_m, 25)
 je_po_termínu = datetime.now() > deadline_datum
 
 nazvy_sluzeb = list(SLUZBY_AGREGATORI.keys())
-tabs = st.tabs(nazvy_sluzeb + ["🗂️ Celková historie"])
+# ZDE JSME PŘIDALI ANALYTIKU DO ZÁLOŽEK
+tabs = st.tabs(nazvy_sluzeb + ["📈 Analytika", "🗂️ Celková historie"])
 df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
 
 # ==========================================
-# VYKRESLENÍ ZÁLOŽEK
+# VYKRESLENÍ ZÁLOŽEK SLUŽEB
 # ==========================================
 for i, sluzba in enumerate(nazvy_sluzeb):
     with tabs[i]:
@@ -148,7 +150,6 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                             dny_cekani = zpozdeni_dnu(row['Urban'])
                             if dny_cekani >= 5:
                                 s2.error(f"⏳ Čeká na Iwonskiho ({dny_cekani} dní)")
-                                # Předvyplněný e-mail
                                 predmet = urllib.parse.quote(f"Urgence schválení: {agregator} za {vybrany_mesic}")
                                 telo = urllib.parse.quote(f"Ahoj Jiří,\n\nprosím tě o schválení částky {castka_format} pro {agregator} v naší schvalovací aplikaci.\n\nDíky, Martin")
                                 s2.link_button("✉️ Poslat urgenci", f"mailto:{EMAIL_IWONSKI}?subject={predmet}&body={telo}")
@@ -183,6 +184,56 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                                 s3.write("⏳ Zablokováno (Čeká na Iwonskiho)")
 
 # ==========================================
+# ZÁLOŽKA ANALYTIKA
+# ==========================================
+with tabs[-2]:
+    st.subheader("📈 Analytické přehledy a vývoj v čase")
+    
+    if df.empty or df['Castka'].sum() == 0:
+        st.info("Zatím není dostatek dat pro zobrazení analytiky. Zadejte nejprve nějaké částky.")
+    else:
+        # Přepínač měny pro grafy (aby se nesčítaly EUR s Kč)
+        zobrazit_menu = st.radio("Vyberte měnu pro zobrazení v grafech:", ["Kč", "EUR"], horizontal=True)
+        
+        # Filtrování dat pro grafy
+        df_graf = df[df['Mena'] == zobrazit_menu].copy()
+        
+        if df_graf.empty:
+            st.warning(f"Zatím nebyly zadány žádné faktury v měně {zobrazit_menu}.")
+        else:
+            # Pomocná funkce pro správné seřazení měsíců v čase
+            def seradit_mesice(m):
+                try:
+                    return datetime.strptime(m, "%m/%Y")
+                except:
+                    return datetime.now()
+                    
+            df_graf['Datum'] = df_graf['Mesic'].apply(seradit_mesice)
+            df_graf = df_graf.sort_values('Datum')
+
+            col_graf1, col_graf2 = st.columns(2)
+
+            with col_graf1:
+                st.markdown(f"**Vývoj celkových nákladů v čase ({zobrazit_menu})**")
+                # Seskupení útrat podle měsíce
+                vyvoj = df_graf.groupby('Mesic', sort=False)['Castka'].sum().reset_index()
+                vyvoj = vyvoj.set_index('Mesic')
+                st.line_chart(vyvoj)
+
+            with col_graf2:
+                st.markdown(f"**Rozdělení nákladů podle služeb (Celkem za celou dobu)**")
+                # Sloupcový graf podle kategorií
+                rozdeleni = df_graf.groupby('Sluzba')['Castka'].sum().reset_index()
+                rozdeleni = rozdeleni.set_index('Sluzba')
+                st.bar_chart(rozdeleni)
+
+            st.markdown(f"**Detailní vývoj podle jednotlivých služeb v čase ({zobrazit_menu})**")
+            # Kontingenční tabulka pro zobrazení více čar v jednom grafu
+            pivot_df = df_graf.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum', fill_value=0)
+            pivot_df = pivot_df.loc[df_graf['Mesic'].unique()] # Zachová správné časové pořadí
+            st.line_chart(pivot_df)
+
+# ==========================================
 # ZÁLOŽKA HISTORIE (Export Excel)
 # ==========================================
 with tabs[-1]:
@@ -191,9 +242,8 @@ with tabs[-1]:
     if df.empty:
         st.info("Databáze je zatím prázdná.")
     else:
-        df_zobrazeni = df.drop(columns=["ID"])
+        df_zobrazeni = df.drop(columns=["ID", "Datum"] if "Datum" in df.columns else ["ID"])
         
-        # Generování CSV speciálně upraveného pro otevření v českém Excelu
         csv = df_zobrazeni.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
         
         st.download_button(
