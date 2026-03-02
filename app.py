@@ -54,14 +54,14 @@ OSTATNI_PARTNERI = ["Mobilní pohotovost", "Zásilkovna", "Teya", "KB SmartPay"]
 EMAIL_IWONSKI = "jiri.iwonski@o2.cz"
 EMAIL_CEJKA = "martin.cejka@o2.cz"
 
-mesice = [f"{m:02d}/2026" for m in range(2, 13)] + [f"{m:02d}/2027" for m in range(1, 13)]
+# OPRAVA: range(1, 13) nyní zahrnuje i leden (01)
+mesice = [f"{m:02d}/2026" for m in range(1, 13)] + [f"{m:02d}/2027" for m in range(1, 13)]
 
 # --- PŘIPOJENÍ K DATŮM ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
     try:
-        # Čteme 10 sloupců: ID, Mesic, Sluzba, Agregator, Castka, Mena, Urban, Iwonski, Cejka, Provize
         df = conn.read(worksheet="Data", usecols=list(range(10)))
         if df.empty or "ID" not in df.columns:
             return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka", "Provize"])
@@ -221,7 +221,6 @@ with tabs[len(nazvy_sluzeb)]:
                 c2.metric("Částka", f"{row['Castka']:,.2f} {row['Mena']}".replace(",", " "))
                 c3.metric("Provize", f"{row['Provize']:,.2f} {row['Mena']}".replace(",", " "))
                 
-                # Smazat může jen Urban
                 if role == "Martin Urban":
                     if c4.button("🗑️ Smazat", key=f"do_{row['ID']}", use_container_width=True):
                         df = df[df['ID'] != str(row['ID'])]
