@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import urllib.parse
+import io
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Fakturace - Schvalování", layout="wide")
@@ -30,7 +31,6 @@ def load_data():
             return pd.DataFrame(columns=["ID", "Mesic", "Sluzba", "Agregator", "Castka", "Mena", "Urban", "Iwonski", "Cejka"])
         df = df.fillna("")
         df['ID'] = df['ID'].astype(str)
-        # Zajištění, že částka je vždy číslo (pro grafy)
         df['Castka'] = pd.to_numeric(df['Castka'], errors='coerce').fillna(0)
         return df
     except Exception:
@@ -64,7 +64,6 @@ deadline_datum = datetime(deadline_r, deadline_m, 25)
 je_po_termínu = datetime.now() > deadline_datum
 
 nazvy_sluzeb = list(SLUZBY_AGREGATORI.keys())
-# ZDE JSME PŘIDALI ANALYTIKU DO ZÁLOŽEK
 tabs = st.tabs(nazvy_sluzeb + ["📈 Analytika", "🗂️ Celková historie"])
 df_mesic = df[df["Mesic"] == vybrany_mesic].copy()
 
@@ -131,11 +130,11 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                     st.divider()
                     s1, s2, s3 = st.columns(3)
                     
-                    # 1. URBAN
+                    # URBAN
                     s1.write("**Zadal (Urban):**")
                     s1.success(row['Urban'])
                     
-                    # 2. IWONSKI
+                    # IWONSKI
                     s2.write("**Schválil (Iwonski):**")
                     if row['Iwonski'] != "":
                         s2.success(row['Iwonski'])
@@ -156,7 +155,7 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                             else:
                                 s2.warning(f"⏳ Čeká na Iwonskiho")
                             
-                    # 3. ČEJKA
+                    # ČEJKA
                     s3.write("**Schválil (Čejka):**")
                     if row['Cejka'] != "":
                         s3.success(row['Cejka'])
@@ -187,54 +186,51 @@ for i, sluzba in enumerate(nazvy_sluzeb):
 # ZÁLOŽKA ANALYTIKA
 # ==========================================
 with tabs[-2]:
-    st.subheader("📈 Analytické přehledy a vývoj v čase")
+    st.subheader("📈 Analytické přehledy")
     
     if df.empty or df['Castka'].sum() == 0:
         st.info("Zatím není dostatek dat pro zobrazení analytiky. Zadejte nejprve nějaké částky.")
     else:
-        # Přepínač měny pro grafy (aby se nesčítaly EUR s Kč)
         zobrazit_menu = st.radio("Vyberte měnu pro zobrazení v grafech:", ["Kč", "EUR"], horizontal=True)
-        
-        # Filtrování dat pro grafy
         df_graf = df[df['Mena'] == zobrazit_menu].copy()
         
         if df_graf.empty:
             st.warning(f"Zatím nebyly zadány žádné faktury v měně {zobrazit_menu}.")
         else:
-            # Pomocná funkce pro správné seřazení měsíců v čase
-            def seradit_mesice(m):
-                try:
-                    return datetime.strptime(m, "%m/%Y")
-                except:
-                    return datetime.now()
-                    
-            df_graf['Datum'] = df_graf['Mesic'].apply(seradit_mesice)
+            # Chronologické seřazení pro osu X
+            df_graf['Datum'] = pd.to_datetime(df_graf['Mesic'], format='%m/%Y', errors='coerce')
             df_graf = df_graf.sort_values('Datum')
 
-            col_graf1, col_graf2 = st.columns(2)
+            st.markdown("---")
+            st.markdown(f"### 📊 Vývoj podle HLAVNÍCH SLUŽEB v čase ({zobrazit_menu})")
+            
+            # Kontingenční tabulka pro SLUŽBY
+            pivot_sluzby = df_graf.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum', fill_value=0)
+            pivot_sluzby.index = pd.to_datetime(pivot_sluzby.index, format='%m/%Y')
+            pivot_sluzby = pivot_sluzby.sort_index()
+            pivot_sluzby.index = pivot_sluzby.index.strftime('%m/%Y')
+            
+            # Vykreslení grafu pro služby
+            st.bar_chart(pivot_sluzby)
 
-            with col_graf1:
-                st.markdown(f"**Vývoj celkových nákladů v čase ({zobrazit_menu})**")
-                # Seskupení útrat podle měsíce
-                vyvoj = df_graf.groupby('Mesic', sort=False)['Castka'].sum().reset_index()
-                vyvoj = vyvoj.set_index('Mesic')
-                st.line_chart(vyvoj)
-
-            with col_graf2:
-                st.markdown(f"**Rozdělení nákladů podle služeb (Celkem za celou dobu)**")
-                # Sloupcový graf podle kategorií
-                rozdeleni = df_graf.groupby('Sluzba')['Castka'].sum().reset_index()
-                rozdeleni = rozdeleni.set_index('Sluzba')
-                st.bar_chart(rozdeleni)
-
-            st.markdown(f"**Detailní vývoj podle jednotlivých služeb v čase ({zobrazit_menu})**")
-            # Kontingenční tabulka pro zobrazení více čar v jednom grafu
-            pivot_df = df_graf.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum', fill_value=0)
-            pivot_df = pivot_df.loc[df_graf['Mesic'].unique()] # Zachová správné časové pořadí
-            st.line_chart(pivot_df)
+            st.markdown("---")
+            st.markdown(f"### 🔍 Vývoj podle AGREGÁTORŮ v čase ({zobrazit_menu})")
+            
+            # Výběrník, aby v grafu agregátorů nebyl chaos
+            vybrana_sluzba = st.selectbox("Vyberte službu pro detailní pohled na její agregátory:", df_graf['Sluzba'].unique())
+            df_agregatori = df_graf[df_graf['Sluzba'] == vybrana_sluzba]
+            
+            # Kontingenční tabulka pro AGREGÁTORY vybrané služby
+            pivot_agregatori = df_agregatori.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum', fill_value=0)
+            pivot_agregatori.index = pd.to_datetime(pivot_agregatori.index, format='%m/%Y')
+            pivot_agregatori = pivot_agregatori.sort_index()
+            pivot_agregatori.index = pivot_agregatori.index.strftime('%m/%Y')
+            
+            # Vykreslení čárového grafu pro agregátory
+            st.line_chart(pivot_agregatori)
 
 # ==========================================
-# ZÁLOŽKA HISTORIE (Export Excel)
+# ZÁLOŽKA HISTORIE (Export Excel .xlsx)
 # ==========================================
 with tabs[-1]:
     st.subheader("🗂️ Kompletní historie fakturací")
@@ -242,15 +238,21 @@ with tabs[-1]:
     if df.empty:
         st.info("Databáze je zatím prázdná.")
     else:
-        df_zobrazeni = df.drop(columns=["ID", "Datum"] if "Datum" in df.columns else ["ID"])
+        # Odstraníme zbytečné sloupce pro export
+        sloupce_k_odstraneni = ["ID"]
+        if "Datum" in df.columns: sloupce_k_odstraneni.append("Datum")
+        df_zobrazeni = df.drop(columns=sloupce_k_odstraneni, errors='ignore')
         
-        csv = df_zobrazeni.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+        # Generování skutečného souboru Excel (.xlsx) v paměti
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            df_zobrazeni.to_excel(writer, index=False, sheet_name='Historie_Fakturace')
         
         st.download_button(
-            label="📥 Stáhnout historii do Excelu (CSV)",
-            data=csv,
-            file_name=f"Fakturace_Historie_{datetime.now().strftime('%Y-%m-%d')}.csv",
-            mime="text/csv",
+            label="📥 Stáhnout historii (Formát Excel .xlsx)",
+            data=excel_buffer.getvalue(),
+            file_name=f"Fakturace_Historie_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
         
