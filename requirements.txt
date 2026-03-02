@@ -1,4 +1,4 @@
 streamlit
 pandas
 st-annotated-text
-streamlit-gsheets
+st-gsheets-connection
