@@ -92,10 +92,23 @@ for i, sluzba in enumerate(nazvy_sluzeb):
                     
                     if role == "Martin Urban":
                         with c2:
-                            input_castka = st.number_input("Zadat částku", min_value=0.0, format="%.2f", step=100.0, key=f"castka_{unikatni_klic}")
+                            # ZDE JE ZMĚNA: value=None a placeholder
+                            input_castka = st.number_input(
+                                "Zadat částku", 
+                                min_value=0.0, 
+                                value=None, 
+                                format="%.2f", 
+                                step=100.0, 
+                                key=f"castka_{unikatni_klic}",
+                                placeholder="Např. 50000"
+                            )
                         with c3:
                             input_mena = st.selectbox("Měna", ["Kč", "EUR"], key=f"mena_{unikatni_klic}")
-                            if st.button("Uložit a schválit", key=f"btn_{unikatni_klic}", type="primary", use_container_width=True):
+                            
+                            # ZDE JE ZMĚNA: Tlačítko je neaktivní, pokud není zadaná částka
+                            povolit_ulozeni = input_castka is not None
+                            
+                            if st.button("Uložit a schválit", key=f"btn_{unikatni_klic}", type="primary", use_container_width=True, disabled=not povolit_ulozeni):
                                 nove_id = str(datetime.now().timestamp())
                                 novy_zaznam = pd.DataFrame([{
                                     "ID": nove_id, "Mesic": vybrany_mesic, "Sluzba": sluzba, "Agregator": agregator,
@@ -197,36 +210,30 @@ with tabs[-2]:
         if df_graf.empty:
             st.warning(f"Zatím nebyly zadány žádné faktury v měně {zobrazit_menu}.")
         else:
-            # Chronologické seřazení pro osu X
             df_graf['Datum'] = pd.to_datetime(df_graf['Mesic'], format='%m/%Y', errors='coerce')
             df_graf = df_graf.sort_values('Datum')
 
             st.markdown("---")
             st.markdown(f"### 📊 Vývoj podle HLAVNÍCH SLUŽEB v čase ({zobrazit_menu})")
             
-            # Kontingenční tabulka pro SLUŽBY
             pivot_sluzby = df_graf.pivot_table(index='Mesic', columns='Sluzba', values='Castka', aggfunc='sum', fill_value=0)
             pivot_sluzby.index = pd.to_datetime(pivot_sluzby.index, format='%m/%Y')
             pivot_sluzby = pivot_sluzby.sort_index()
             pivot_sluzby.index = pivot_sluzby.index.strftime('%m/%Y')
             
-            # Vykreslení grafu pro služby
             st.bar_chart(pivot_sluzby)
 
             st.markdown("---")
             st.markdown(f"### 🔍 Vývoj podle AGREGÁTORŮ v čase ({zobrazit_menu})")
             
-            # Výběrník, aby v grafu agregátorů nebyl chaos
             vybrana_sluzba = st.selectbox("Vyberte službu pro detailní pohled na její agregátory:", df_graf['Sluzba'].unique())
             df_agregatori = df_graf[df_graf['Sluzba'] == vybrana_sluzba]
             
-            # Kontingenční tabulka pro AGREGÁTORY vybrané služby
             pivot_agregatori = df_agregatori.pivot_table(index='Mesic', columns='Agregator', values='Castka', aggfunc='sum', fill_value=0)
             pivot_agregatori.index = pd.to_datetime(pivot_agregatori.index, format='%m/%Y')
             pivot_agregatori = pivot_agregatori.sort_index()
             pivot_agregatori.index = pivot_agregatori.index.strftime('%m/%Y')
             
-            # Vykreslení čárového grafu pro agregátory
             st.line_chart(pivot_agregatori)
 
 # ==========================================
@@ -238,12 +245,10 @@ with tabs[-1]:
     if df.empty:
         st.info("Databáze je zatím prázdná.")
     else:
-        # Odstraníme zbytečné sloupce pro export
         sloupce_k_odstraneni = ["ID"]
         if "Datum" in df.columns: sloupce_k_odstraneni.append("Datum")
         df_zobrazeni = df.drop(columns=sloupce_k_odstraneni, errors='ignore')
         
-        # Generování skutečného souboru Excel (.xlsx) v paměti
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             df_zobrazeni.to_excel(writer, index=False, sheet_name='Historie_Fakturace')
